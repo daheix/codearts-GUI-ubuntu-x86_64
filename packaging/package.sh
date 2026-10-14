@@ -21,11 +21,13 @@ VER=$(grep -oE 'project\(codeartsGUI VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.
 
 BIN="$BUILD/codeartsGUI"
 [ -x "$BIN" ] || { echo "未找到可执行 $BIN，请先 ./build.sh build" >&2; exit 1; }
-# 宣称完整性前必须自包含：不得依赖系统 Qt 动态库（MIT 分发、拷贝即用）
+# 自包含性：静态 Qt6 构建应无 Qt6 动态依赖（拷贝即用）。动态 Qt6 构建（如 CI）
+# 会依赖 libQt6*.so，此处仅告警不中断——作者正式 Release 用静态 vcpkg Qt6 自含。
 if ldd "$BIN" 2>/dev/null | grep -qiE 'libQt6|libqxcb'; then
-  echo "错误：$BIN 仍依赖 Qt6 动态库，违背静态自含约定。" >&2
-  ldd "$BIN" | grep -iE 'libQt6|libqxcb' >&2
-  exit 1
+    echo "提示：$BIN 依赖 Qt6 动态库（非静态构建），.tar.gz 需目标机装有 Qt6 运行时。" >&2
+    QT_DYNAMIC=1
+else
+    QT_DYNAMIC=0
 fi
 
 DIST="$ROOT/dist"

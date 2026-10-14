@@ -13,19 +13,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装依赖（系统 Qt6 + 构建工具）
+      - name: 安装系统依赖（构建工具 + Qt 运行时库）
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build git pkg-config \
-            qt6-base-dev qt6-base-dev-tools \
-            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev \
             libfontconfig1-dev libfreetype-dev libexpat1-dev \
             libpng-dev zlib1g-dev libbrotli-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev \
+            libdbus-1-3 \
             dpkg-dev binutils
 
-      - name: Configure（系统 Qt6，不指定 CODEARTS_QT6_PREFIX）
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: 安装 Qt 6.8（现代 Qt6，满足 qtermwidget 2.4.0；apt 版过旧不可用）
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.0"
+          host: linux
+          target: desktop
+          arch: gcc_64
+          dir: ${{ github.workspace }}/qt
+          cache: true
+
+      - name: Configure（指定安装的 Qt6 前缀）
+        run: |
+          QT_PREFIX="${{ github.workspace }}/qt/6.8.0/gcc_64"
+          echo "Qt 前缀: $QT_PREFIX"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCODEARTS_QT6_PREFIX="$QT_PREFIX"
 
       - name: Build
         run: cmake --build build
@@ -34,7 +48,7 @@ jobs:
         run: |
           fail=0
           for t in codeartsGUI_tests goal_tests systems_tests goalrunner_tests; do
-            echo "== $t =="; ./build/$t || fail=1
+            echo "== $t =="; QT_QPA_PLATFORM=offscreen ./build/$t || fail=1
           done
           exit $fail
 
@@ -49,7 +63,7 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
 
-      - name: 发布 Release（仅 tag）
+      - name: 发布 Release（仅 tag，幂等）
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,11 +73,8 @@ jobs:
           cp "dist/codeartsGUI-${ver}-amd64.deb" . 2>/dev/null || true
           assets=("codeartsGUI-${ver}-ubuntu-x86_64.tar.gz" "codeartsGUI-${ver}-amd64.deb")
           if gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release 已存在，上传/覆盖资产"
-            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber \
-              --repo "${{ github.repository }}"
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber --repo "${{ github.repository }}"
           else
             gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
-              --title "codeartsGUI ${ver}" --generate-notes \
-              --repo "${{ github.repository }}"
+              --title "codeartsGUI ${ver}" --generate-notes --repo "${{ github.repository }}"
           fi
