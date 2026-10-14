@@ -19,7 +19,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build git pkg-config \
             qt6-base-dev qt6-base-dev-tools \
-            libqt6core5compat6-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev \
             libfontconfig1-dev libfreetype-dev libexpat1-dev \
             libpng-dev zlib1g-dev libbrotli-dev \
             dpkg-dev binutils
@@ -57,9 +57,13 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           cp "dist/codeartsGUI-${ver}-ubuntu-x86_64.tar.gz" . 2>/dev/null || true
           cp "dist/codeartsGUI-${ver}-amd64.deb" . 2>/dev/null || true
-          gh release create "${GITHUB_REF_NAME}" \
-            "codeartsGUI-${ver}-ubuntu-x86_64.tar.gz" \
-            "codeartsGUI-${ver}-amd64.deb" \
-            --title "codeartsGUI ${ver}" \
-            --generate-notes \
-            --repo "${{ github.repository }}"
+          assets=("codeartsGUI-${ver}-ubuntu-x86_64.tar.gz" "codeartsGUI-${ver}-amd64.deb")
+          if gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release 已存在，上传/覆盖资产"
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber \
+              --repo "${{ github.repository }}"
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+              --title "codeartsGUI ${ver}" --generate-notes \
+              --repo "${{ github.repository }}"
+          fi
