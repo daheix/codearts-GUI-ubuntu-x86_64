@@ -21,16 +21,16 @@
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| 1 需求 | requirements v2（FR-7~FR-12：goal/双主题/权限/重试/开源） | ▶ |
-| 2 设计 | design v2（A~H + 开源发布规划） | □ |
-| 3 任务 | tasks v2 | □ |
-| 4 Spike | sendText 注入 + 权限询问框 PTY 特征捕获 | □ |
-| 5 实现 | Theme/PermissionStore/GoalRunner/重试引擎/UI（TDD） | □ |
-| 6 测试 | doctest 全绿 + clang-format | □ |
-| 7 审计 | audit v2（含权限/重试策略审计） | □ |
-| 8 开源发布 | MIT LICENSE/README/CPack 安装包/GitHub Release | □ |
+| 1 需求 | requirements v2（FR-7~FR-12：goal/双主题/权限/重试/开源） | ✅ |
+| 2 设计 | design v2（A~H + 开源发布规划） | ✅ |
+| 3 任务 | tasks v2 | ✅ |
+| 4 Spike | sendText 注入 + 权限询问框 PTY 特征捕获（T9，发现固化进设计§9） | ✅ |
+| 5 实现 | Theme/PermissionStore/GoalRunner/重试引擎/UI（TDD，T10-T18） | ✅ |
+| 6 测试 | doctest 全绿（4套件38用例653断言）+ clang-format | ✅ |
+| 7 审计 | audit v2（含权限/重试策略审计） | ✅ |
+| 8 开源发布 | MIT LICENSE/README/CHANGELOG/.gitignore + packaging/package.sh 打包 + GitHub Release v0.2.0 + CI | ✅ |
 
-**开源项目**：GitHub 仓库 `codearts-GUI-ubuntu-x86_64`，MIT 协议，Release 含完整安装包 + 源码。
+**开源项目**：GitHub 仓库 `daheix/codearts-GUI-ubuntu-x86_64`，MIT 协议，Release v0.2.0 含完整安装包（静态自含 tar.gz + .deb）+ 源码 + CI。
 
 ## 核心技术挑战：长会话卡顿
 

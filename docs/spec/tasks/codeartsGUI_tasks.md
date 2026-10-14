@@ -41,7 +41,7 @@
 | T17 | UI：权限管理页（规则表格/bash_mode/信任目录）+ 权限询问弹窗 | 中 | 手测改规则落盘；询问弹窗三选项注入 | ✅ |
 | T18 | UI：外观菜单（深色/浅色）+ ThemeManager 接线 | 低 | 手测即时切换、重启保持默认深色/用户选择 | ✅ |
 | T19 | 全量测试回归 + clang-format + 审计 v2 | 低 | doctest 全绿、格式化过、audit v2 无阻断 | ✅ |
-| T20 | 开源发布：MIT LICENSE/README/CHANGELOG/.gitignore/CPack(TGZ+DEB)/CI release.yml/git tag/GitHub Release | 中 | 本地 CPack 两包产出；CI 语法有效；Release 含安装包+源码 | T19 |
+| T20 | 开源发布：MIT LICENSE/README/CHANGELOG/.gitignore/CPack(TGZ+DEB)/CI release.yml/git tag/GitHub Release | 中 | 本地 CPack 两包产出；CI 语法有效；Release 含安装包+源码 | ✅ |
 
 ## 第二期里程碑
 - **M4（驱动核心）**：T9-T12 —— 协议/状态/重试纯逻辑全测绿。

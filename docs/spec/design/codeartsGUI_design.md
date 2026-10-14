@@ -186,8 +186,8 @@ Idle → ContractSent(下发契约) → Driving(步进) → Verifying(判据核�
 |----|------|
 | 仓库/标题 | GitHub `codearts-GUI-ubuntu-x86_64`；LICENSE=MIT（含版权头） |
 | 版本 | 语义化 v0.2.0 起；git tag `v0.2.0` 触发 CI |
-| 安装包 | CPack：`TGZ`（免安装 tar.gz 含二进制+desktop+install.sh）+ `DEB`（ubuntu-x86_64） |
-| CI | `.github/workflows/release.yml`：ubuntu-24.04 → apt Qt6 → 构建+测试 → CPack → gh release 上传 |
+| 安装包 | **打包脚本 `packaging/package.sh`**（非 CPack）：基于自含静态二进制产出 `tar.gz`（含二进制+desktop+install.sh+文档）与 `deb`（dpkg-deb）。**放弃 CPack**：其 install 打包遍历含 qtermwidget（FetchContent 子项目）在内的整棵 install 树，子项目 install 指向 /usr/local 绝对路径致 staging 失败，且遮蔽其 install 会使父 cmake_install.cmake 的 include 悬空（CMake 已知陷阱）。静态二进制手动组装文件树完全可控。 |
+| CI | `.github/workflows/release.yml`：ubuntu-22.04 → `jurplel/install-qt-action` 装 **Qt 6.8**（apt 的 Qt 6.2 过旧致 qtermwidget 2.4.0 无法配置）→ 构建+测试 → package.sh → tag 触发 `gh release` 上传（幂等）。 |
 | Qt6 可复现 | `-DCODEARTS_QT6_PREFIX=<path>`（默认探测 ChinaSimStdio vcpkg 静态 Qt6；未设且探测失败则 find_package 系统 Qt6——**CMake 显式打印所选来源**，README 记录） |
 | 静态闭包 | 仅当 vcpkg 静态 Qt6 时追加 whole-archive 闭包；系统动态 Qt6 走常规链接（if 分支，显式打印） |
 | README | 中文：功能/防卡顿与 /goal 架构图/构建（两种 Qt6 来源）/用法/权限说明/免责声明（第三方工具包装） |

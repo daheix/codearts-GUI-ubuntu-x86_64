@@ -24,16 +24,14 @@ jobs:
             libdbus-1-3 \
             dpkg-dev binutils
 
-      - name: 安装 Qt 6.7（现代 Qt6，满足 qtermwidget 2.4.0；apt 版过旧不可用）
-        uses: jurplel/install-qt-action@v4
+      - name: 安装 Qt 6.7（install-qt-action@v3，aqt 参数与运行器 Py3.14 兼容）
+        uses: jurplel/install-qt-action@v3
         with:
           version: "6.7.3"
           host: linux
           target: desktop
           arch: gcc_64
           dir: ${{ github.workspace }}/qt
-          cache: true
-          set-env: "true"
 
       - name: Configure（指定安装的 Qt6 前缀）
         run: |
