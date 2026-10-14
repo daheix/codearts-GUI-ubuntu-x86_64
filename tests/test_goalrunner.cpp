@@ -235,3 +235,112 @@ TEST_CASE("GoalRunner 会话中断→restart 后看门狗兜底续跑") {
   r.tick(1000 + 91 * 1000); // 重建后 90s 兜底，强制断点续跑
   CHECK(sink.injections.size() > after);
 }
+
+// ───── 看门狗 v2：抗心跳 + 阶段无关（真正修复 reported bug）─────
+
+TEST_CASE("GoalRunner 抗心跳：只有转轮/控制帧(无文字)持续 → 60s 仍判停滞续跑") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标"), QString());
+  const int after = sink.injections.size();
+
+  // 模拟内核每 ~30s connection-monitor 心跳 +
+  // 转轮动画：纯控制序列，无字母/中文。
+  // 这些会刷新"最后输出时间"，但不含真实内容——旧版静默看门狗被骗过永不触发。
+  qint64 t = 1000;
+  for (int i = 0; i < 40; ++i) {
+    t += 1000;
+    r.setClock(t);
+    r.feed(QStringLiteral("\x1b[?2026h\x1b[0;3H\x1b[?25h\x1b[0m"));
+  }
+  r.tick(t + 1000); // ~42s：未到 60s 内容窗口
+  CHECK(sink.injections.size() == after);
+
+  r.tick(t + 21000); // ~62s 无真实内容 → 强制续跑（关键：不被心跳欺骗）
+  CHECK(sink.injections.size() > after);
+  CHECK(r.retry().consecutiveFailures() >= 1);
+}
+
+TEST_CASE("GoalRunner 阶段无关无进度：Driving 下持续有文字但无新 GOAL-STEP → "
+          "90s 判卡重启") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标"), QString());
+  r.feed(QStringLiteral("[GOAL-STEP 1/3] 调研 | 推荐方案: A"));
+  CHECK(r.phase() == GoalPhase::Driving);
+  const int after = sink.injections.size();
+
+  // 之后有真实文字持续流出（假活：模型在反复刷新但不再产出新的步骤标记），
+  // 持续 95s，内容看门狗不触发，但"无步进"必须触发。
+  qint64 t = r.nowMs();
+  for (int i = 0; i < 95; ++i) {
+    t += 1000;
+    r.setClock(t);
+    r.feed(QStringLiteral("filler output line without markers 0123"));
+  }
+  r.tick(t + 100);                       // ~95s 无 [GOAL-STEP]
+  CHECK(sink.injections.size() > after); // Driving 下也强制重启续跑
+}
+
+TEST_CASE("GoalRunner interrupt(忙)信号在→不打断合法长步骤") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标"), QString());
+  r.feed(QStringLiteral("[GOAL-STEP 1/3] 长步骤运行中 | 推荐方案: A"));
+  const int after = sink.injections.size();
+
+  // 模拟一个超过 60s 的长步骤：持续输出"esc interrupt"(忙) + 真实内容，
+  // 但暂无新 [GOAL-STEP]。此时 interrupt 在=模型仍在工作，看门狗绝不能重启。
+  qint64 t = r.nowMs();
+  QStringList statuses;
+  QObject::connect(&r, &GoalRunner::statusText, &r,
+                   [&statuses](const QString &x) { statuses << x; });
+  for (int i = 0; i < 100; ++i) {
+    t += 1000;
+    r.setClock(t);
+    r.feed(
+        QStringLiteral("running ... esc interrupt ... step progress text 42"));
+  }
+  r.tick(t + 100); // ~100s，仍应放行长步骤
+  if (sink.injections.size() != after)
+    MESSAGE("UNEXPECTED restart, statuses=", statuses.join(" | ").toStdString());
+  CHECK(sink.injections.size() == after);
+  CHECK(r.phase() == GoalPhase::Driving);
+}
+
+TEST_CASE("GoalRunner interrupt 消失+无进展 60s → 判定停住并重启续跑") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标"), QString());
+  r.feed(QStringLiteral("[GOAL-STEP 2/5] 实现 | 推荐方案: A"));
+  const int after = sink.injections.size();
+
+  // 先有一段"工作中"（interrupt 在），随后中断（info timeout）→ interrupt
+  // 消失、无进展。
+  qint64 t = r.nowMs();
+  for (int i = 0; i < 10; ++i) {
+    t += 1000;
+    r.setClock(t);
+    r.feed(QStringLiteral("busy esc interrupt step 2 output"));
+  }
+  // 之后只剩转轮/心跳：无 interrupt、无新步进
+  for (int i = 0; i < 65; ++i) {
+    t += 1000;
+    r.setClock(t);
+    r.feed(QStringLiteral("\x1b[3;6H\x1b[?25h"));
+  }
+  r.tick(t + 100); // 距最后 interrupt>20s 且无进展>60s
+  CHECK(sink.injections.size() > after); // 重启续跑
+}

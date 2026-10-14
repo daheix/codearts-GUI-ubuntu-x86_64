@@ -97,6 +97,12 @@ private:
   qint64 m_lastProgressMs = -1; // 最近一次步进标记/注入时间（无进度判据）
   qint64 m_recoverSinceMs =
       -1; // 会话死亡进入 Recovering 的时刻（恢复兜底计时）
+  qint64 m_lastContentMs =
+      -1; // 最近"真实内容"输出时间（抗心跳：忽略纯控制/转轮帧）
+  bool m_errorRetryPending =
+      false; // 错误分类路径有待到期重试（tick 依此驱动 60s 泵）
+  qint64 m_lastBusySignalMs =
+      -1; // 状态栏"esc interrupt"(工作)信号：对话状态真值
   bool m_awaitingDone = false;
 };
 

@@ -2,8 +2,13 @@
 #include "goalrunner.h"
 
 #include <QDateTime>
+#include <QRegularExpression>
 
 namespace codearts {
+
+// 前向声明（定义见下方看门狗参数块，内部链接）
+static bool hasRealContent(const QString &raw);
+static bool reportsBusy(const QString &raw);
 
 GoalRunner::GoalRunner(ITerminalSink *sink, QString statePath, QObject *parent)
     : QObject(parent), m_sink(sink), m_statePath(std::move(statePath)) {}
@@ -42,7 +47,7 @@ void GoalRunner::injectContract() {
   emit injectionRequested(prompt);
   if (m_sink)
     m_sink->inject(prompt + QStringLiteral("\r"));
-  m_lastFeedMs = m_lastProgressMs =
+  m_lastFeedMs = m_lastProgressMs = m_lastContentMs =
       nowMs(); // 注入完毕开始计时，等待模型/新输出
   setPhase(GoalPhase::AwaitingModel);
 }
@@ -56,7 +61,7 @@ void GoalRunner::injectResume() {
   emit injectionRequested(prompt);
   if (m_sink)
     m_sink->inject(prompt + QStringLiteral("\r"));
-  m_lastFeedMs = m_lastProgressMs =
+  m_lastFeedMs = m_lastProgressMs = m_lastContentMs =
       nowMs(); // 注入完毕开始计时，等待模型/新输出
   setPhase(GoalPhase::AwaitingModel);
 }
@@ -69,7 +74,9 @@ void GoalRunner::start(const QString &goal, const QString &acceptance) {
   m_retry = RetryEngine{};
   m_awaitingDone = false;
   m_recoverSinceMs = -1;
-  m_lastFeedMs = m_lastProgressMs = nowMs();
+  m_errorRetryPending = false;
+  m_lastBusySignalMs = -1; // 等 TUI 首个 interrupt 信号
+  m_lastFeedMs = m_lastProgressMs = m_lastContentMs = nowMs();
   // 先落盘（含目标与验收），再下发契约——崩溃亦可恢复。
   persist();
   emit statusText(QStringLiteral("下发目标契约…"));
@@ -85,6 +92,11 @@ void GoalRunner::stop() {
 
 void GoalRunner::feed(const QString &raw) {
   m_lastFeedMs = nowMs();
+  if (hasRealContent(raw))
+    m_lastContentMs = nowMs(); // 抗心跳：真实文字才算"活"，转轮/心跳不算
+  if (reportsBusy(raw))
+    m_lastBusySignalMs =
+        nowMs(); // 状态栏"esc interrupt"在=模型正在工作（对话状态真值）
   const GoalMarkers m = GoalProtocol::parse(raw);
 
   // 进度优先：同段既有步进/完成标记，就不按错误处理（避免把含"timeout"字样的
@@ -92,11 +104,12 @@ void GoalRunner::feed(const QString &raw) {
   if (m.hasStep || m.hasDone) {
     if (m_retry.consecutiveFailures() > 0)
       m_retry.notifySuccess();
+    m_errorRetryPending = false;
     handleMarkers(m);
     return;
   }
 
-  // 错误检测（通道1）：放宽到所有"活动阶段"，Driving/Reccovering 出错同样续航。
+  // 错误检测（通道1）：活动阶段（含 Driving）出错同样续航。
   const bool activePhase = m_phase == GoalPhase::AwaitingModel ||
                            m_phase == GoalPhase::Driving ||
                            m_phase == GoalPhase::Recovering;
@@ -106,9 +119,10 @@ void GoalRunner::feed(const QString &raw) {
     return;
   }
 
-  // 普通输出：会话存活，重置连续失败计数（保留审计）。
+  // 普通输出：会话存活，重置连续失败计数、清错误重试未决（保留审计）。
   if (m_retry.consecutiveFailures() > 0)
     m_retry.notifySuccess();
+  m_errorRetryPending = false;
 }
 
 void GoalRunner::handleMarkers(const GoalMarkers &m) {
@@ -151,13 +165,43 @@ void GoalRunner::handleMarkers(const GoalMarkers &m) {
 }
 
 // ── 看门狗写死参数（用户指定：1 分钟轮询一次对话状态）──
-static constexpr qint64 kWatchdogSilenceMs =
-    60 * 1000; // 目标进行中持续 60s 无任何终端输出→判停滞
+static constexpr qint64 kWatchdogContentMs =
+    60 * 1000; // 60s 无真实文字内容→判停滞（抗心跳：忽略纯控制/转轮帧）
 static constexpr qint64 kWatchdogNoProgressMs =
-    180 * 1000; // AwaitingModel 下 180s 无步进→判卡
+    60 * 1000; // 60s(用户指定 1 分钟轮询)无 [GOAL-STEP] 推进→判卡
+static constexpr qint64 kWorkingGoneMs =
+    20 * 1000; // 状态栏"esc interrupt"消失持续 20s→认定对话已停止
 static constexpr qint64 kRecoverResumeMs =
     90 * 1000; // 会话重建后 90s 内强制续跑（兜底）
 static constexpr qint64 kNoBaseline = 1LL << 62; // 无基线时的哨兵
+
+// 判断一段原始输出是否含"真实文字内容"（剥离转义后的字母/数字/中日韩）。
+// 目的：区分"模型在说话/有文字"与"纯转轮动画/光标闪烁/connection-monitor
+// 心跳"。
+static bool hasRealContent(const QString &raw) {
+  // 逐字符判"真实文字"：字母/数字或 CJK。不用正则 Unicode
+  // 转义（QRegularExpression 对 \uXXXX
+  // 支持缺位曾致正则恒失效、内容判据形同虚设的坑）。转轮/方框/盲文字符属
+  // 符号类，isLetterOrNumber=false 天然不计入——心跳/动画因此不刷新内容时间。
+  const QString t = GoalProtocol::stripAnsi(raw);
+  for (const QChar c : t) {
+    if (c.isLetterOrNumber())
+      return true;
+    const ushort u = c.unicode();
+    if (u >= 0x4E00 && u <= 0x9FFF) // CJK 统一表意
+      return true;
+  }
+  return false;
+}
+
+// 状态栏是否显示"工作中"标志（TUI 忙时渲染 esc interrupt 字样，停时消失）。
+//  词边界且只匹配独立 interrupt，排除 interrupted/interruptible。
+static bool reportsBusy(const QString &raw) {
+  static const QRegularExpression kBusy(
+      QStringLiteral("\\binterrupt\\b"),
+      QRegularExpression::CaseInsensitiveOption);
+  return kBusy.match(GoalProtocol::stripAnsi(raw)).hasMatch();
+}
 
 void GoalRunner::scheduleRetry(const QString &kind) {
   // 永久重试：立即或到期重发当前指令。次数无上限。
@@ -167,15 +211,18 @@ void GoalRunner::scheduleRetry(const QString &kind) {
                       .arg(kind)
                       .arg(m_retry.consecutiveFailures()));
   if (immediate) {
+    m_errorRetryPending = false;
     pumpRetry();
   } else {
-    // 到期重试由 UI 层定时调用 pumpRetry（这里不自建定时器，保持可测）。
+    // 记未决；到期由 UI 层 tick() 调 pumpRetry（不自建定时器，保持可测）。
+    m_errorRetryPending = true;
   }
 }
 
 void GoalRunner::pumpRetry() {
   if (!m_retry.shouldRetry(nowMs()))
     return;
+  m_errorRetryPending = false;
   // 重发：有断点进度则用恢复注入，否则重发契约。
   if (m_state.doneSteps() > 0 || m_state.totalSteps > 0) {
     injectResume();
@@ -193,7 +240,7 @@ void GoalRunner::forceRestart(const QString &reason) {
       QStringLiteral("对话停滞/异常(%1)，强制重启续跑 #%2（永久续航）")
           .arg(reason)
           .arg(m_retry.consecutiveFailures()));
-  m_lastFeedMs = m_lastProgressMs = nowMs();
+  m_lastFeedMs = m_lastProgressMs = m_lastContentMs = nowMs();
   if (m_state.doneSteps() > 0 || m_state.totalSteps > 0)
     injectResume();
   else
@@ -204,32 +251,37 @@ void GoalRunner::tick(qint64 nowMs) {
   setClock(nowMs);
   const qint64 now = nowMs;
 
-  if (m_phase == GoalPhase::Driving || m_phase == GoalPhase::AwaitingModel ||
-      m_phase == GoalPhase::Recovering) {
-    // 已有错误/重试在进行：交给重试引擎按 60s 节流重发，看门狗不重复触发。
-    if (m_retry.consecutiveFailures() > 0) {
-      pumpRetry();
-      return;
-    }
+  // 1) 错误分类路径的到期重试（重试引擎 60s
+  // 节流）。看门狗不与之抢，交由它驱动。
+  if (m_errorRetryPending && m_retry.shouldRetry(now)) {
+    pumpRetry();
+    return;
   }
 
+  const qint64 noContent =
+      (m_lastContentMs < 0) ? kNoBaseline : (now - m_lastContentMs);
+  const qint64 noProg =
+      (m_lastProgressMs < 0) ? kNoBaseline : (now - m_lastProgressMs);
+  // 对话状态真值：TUI 状态栏忙时渲染"esc
+  // interrupt"，停时消失。据此区分真忙与卡住。
+  const qint64 sinceBusy =
+      (m_lastBusySignalMs < 0) ? kNoBaseline : (now - m_lastBusySignalMs);
+  const bool chatStopped = sinceBusy >= kWorkingGoneMs; // interrupt 已消失
+
   if (m_phase == GoalPhase::Driving || m_phase == GoalPhase::AwaitingModel) {
-    const qint64 silent =
-        (m_lastFeedMs < 0) ? kNoBaseline : (now - m_lastFeedMs);
-    const qint64 noProg =
-        (m_lastProgressMs < 0) ? kNoBaseline : (now - m_lastProgressMs);
-    if (silent >= kWatchdogSilenceMs) {
-      forceRestart(QStringLiteral("stall-no-output"));
-    } else if (m_phase == GoalPhase::AwaitingModel &&
-               noProg >= kWatchdogNoProgressMs) {
-      forceRestart(QStringLiteral("stall-no-progress"));
+    if (noProg >= kWatchdogNoProgressMs &&
+        (chatStopped || noContent >= kWatchdogContentMs)) {
+      // 判据：无 [GOAL-STEP] 推进达阈值，且(对话已停 或 长时间无真实内容)。
+      // interrupt 在(模型仍忙)时 chatStopped=false → 绝不打断合法长步骤。
+      forceRestart(chatStopped ? QStringLiteral("stall-chat-stopped")
+                               : QStringLiteral("stall-no-content"));
     }
   } else if (m_phase == GoalPhase::Recovering) {
     const qint64 silent =
         (m_lastFeedMs < 0) ? kNoBaseline : (now - m_lastFeedMs);
     const qint64 sinceDeath =
         (m_recoverSinceMs < 0) ? kNoBaseline : (now - m_recoverSinceMs);
-    if (silent >= kWatchdogSilenceMs || sinceDeath >= kRecoverResumeMs) {
+    if (sinceDeath >= kRecoverResumeMs || silent >= kWatchdogContentMs) {
       forceRestart(QStringLiteral("session-recovered"));
     }
   }
@@ -240,7 +292,10 @@ void GoalRunner::onSessionDied() {
     return;
   setPhase(GoalPhase::Recovering);
   m_recoverSinceMs = nowMs();
-  m_lastFeedMs = -1; // 会话重启后以新输出重算静默
+  m_errorRetryPending = false;
+  m_lastBusySignalMs = -1; // 重建后以新 TUI 的 interrupt 信号为准
+  m_lastFeedMs = -1;       // 会话重启后以新输出重算静默
+  m_lastContentMs = -1;    // 同上，重建基线
   m_lastProgressMs = nowMs();
   emit statusText(QStringLiteral("会话中断，重启并断点续跑（永久续航）…"));
   persist();

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(codeartsGUI VERSION 0.2.1 LANGUAGES CXX)
+project(codeartsGUI VERSION 0.2.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -65,6 +65,21 @@ if(CODEARTS_STATIC_QT6)
         "${VCPKG_LIB}/libbrotlicommon.a")
 else()
     set(CODEARTS_QT_CLOSURE "")
+endif()
+
+# 静态 Qt6：ibus 输入法插件目标（中文输入）。作为 CODEARTS_IBUS_PLUGIN 变量插入
+# 主链接列表、置于闭包之前；闭包（freetype/fontconfig/whole-archive expat）保持最后
+# 统一解析符号，否则打乱 fontconfig/freetype 顺序会报 FT_Get_BDF_Property undefined。
+set(CODEARTS_IBUS_PLUGIN "")
+if(CODEARTS_STATIC_QT6)
+    find_package(Qt6QIbusPlatformInputContextPlugin QUIET CONFIG)
+    if(TARGET Qt6::QIbusPlatformInputContextPlugin)
+        set(CODEARTS_IBUS_PLUGIN Qt6::QIbusPlatformInputContextPlugin)
+        set(CODEARTS_IBUS_DEF CODEARTS_STATIC_IBUS_PLUGIN=1)
+        message(STATUS "codeartsGUI: 静态链接 ibus 输入法插件（中文输入）")
+    else()
+        message(WARNING "codeartsGUI: 未找到 Qt6 ibus 输入法插件，中文输入将不可用")
+    endif()
 endif()
 
 # ── 依赖链: lxqt-build-tools 2.4.0 → qtermwidget 2.4.0 ──
@@ -151,8 +166,14 @@ target_include_directories(codeartsGUI PRIVATE src ${qtermwidget_SOURCE_DIR}/lib
 target_link_libraries(codeartsGUI PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network
     qtermwidget6
+    ${CODEARTS_IBUS_PLUGIN}
     ${CODEARTS_QT_CLOSURE}
 )
+
+# ibus 静态插件：导入宏需该编译定义（仅在静态链接时）
+if(DEFINED CODEARTS_IBUS_DEF)
+    target_compile_definitions(codeartsGUI PRIVATE ${CODEARTS_IBUS_DEF})
+endif()
 
 install(TARGETS codeartsGUI RUNTIME DESTINATION bin)
 install(FILES resources/codeartsGUI.desktop

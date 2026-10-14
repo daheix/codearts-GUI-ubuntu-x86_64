@@ -48,6 +48,20 @@ TEST_CASE("GoalProtocol::parse 解析 GOAL-PLAN/STEP/DONE 与推荐方案") {
   CHECK(GoalProtocol::parse(done).hasDone);
 }
 
+TEST_CASE("GoalProtocol::stripAnsi 正确处理 CSI 私有标记(?)与参数(抗心跳根因)") {
+  // 曾因 CSI 剥离 bug 残留 "2026h" 字母，污染内容判定与遍历——这里锁死。
+  const QString heartbeat =
+      QStringLiteral("\x1b[?2026h\x1b[0;3H\x1b[38;2;255;255;255m\x1b[0m\x1b[?25h");
+  const QString clean = GoalProtocol::stripAnsi(heartbeat);
+  CHECK(clean.isEmpty());              // 纯控制序列应被完全剥离
+  CHECK(!clean.contains(QLatin1Char('h')));
+  // 带真实文字的 CSI 包裹：剥离后只剩正文
+  const QString wrapped =
+      QStringLiteral("\x1b[38;2;180;148;245mGOAL-STEP 1/2\x1b[0m");
+  const QString cw = GoalProtocol::stripAnsi(wrapped);
+  CHECK(cw == QStringLiteral("GOAL-STEP 1/2"));
+}
+
 TEST_CASE("GoalProtocol::parse 非法串不崩且无标记") {
   const auto r = GoalProtocol::parse(
       QStringLiteral("普通对话，无任何标记。[GOAL-STEP x/y]"));
@@ -200,3 +214,4 @@ TEST_CASE("RetryEngine 成功后复位且审计留痕") {
   CHECK(!e.warningActive());
   CHECK(!e.shouldRetry(1LL << 40)); // 成功后不再重试
 }
+

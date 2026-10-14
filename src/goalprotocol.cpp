@@ -30,13 +30,21 @@ QString GoalProtocol::stripAnsi(const QString &text) {
       break;
     const QChar k = text.at(i + 1);
     if (k == QLatin1Char('[')) {
-      // CSI：参数/中间字节后接 0x40–0x7E 终结
+      // CSI：ESC [ <参数 0x30-0x3F><中间 0x20-0x2F> <终结 0x40-0x7E>
+      // 必须先吃参数/中间字节（含私有标记 ?、分号、数字），再吃一个终结字节，
+      // 否则 ESC[?2026h 会残留 "2026h" 污染内容判定与遍历（抗心跳失效的根因）。
       i += 2;
-      while (i < n && text.at(i) >= QLatin1Char('@') &&
-             text.at(i) <= QLatin1Char('~'))
-        ++i;
-      if (i < n)
-        ++i; // 吃掉终结字节
+      while (i < n) {
+        const ushort ch = text.at(i).unicode();
+        if (ch >= 0x20 && ch <= 0x3F) {
+          ++i; // 参数/中间字节
+          continue;
+        }
+        if (ch >= 0x40 && ch <= 0x7E) {
+          ++i; // 终结字节
+        }
+        break;
+      }
     } else if (k == QLatin1Char(']')) {
       // OSC：至 BEL 或 ESC \（ST）
       i += 2;
