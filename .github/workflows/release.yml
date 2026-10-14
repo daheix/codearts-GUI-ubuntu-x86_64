@@ -1,0 +1,65 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖（系统 Qt6 + 构建工具）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build git pkg-config \
+            qt6-base-dev qt6-base-dev-tools \
+            libqt6core5compat6-dev \
+            libfontconfig1-dev libfreetype-dev libexpat1-dev \
+            libpng-dev zlib1g-dev libbrotli-dev \
+            dpkg-dev binutils
+
+      - name: Configure（系统 Qt6，不指定 CODEARTS_QT6_PREFIX）
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test（4 套件 / 38 用例 / 653 断言）
+        run: |
+          fail=0
+          for t in codeartsGUI_tests goal_tests systems_tests goalrunner_tests; do
+            echo "== $t =="; ./build/$t || fail=1
+          done
+          exit $fail
+
+      - name: Pack（tar.gz + .deb）
+        run: bash packaging/package.sh build
+
+      - name: 上传构建产物（PR/分支用）
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeartsGUI-packages
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+
+      - name: 发布 Release（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          cp "dist/codeartsGUI-${ver}-ubuntu-x86_64.tar.gz" . 2>/dev/null || true
+          cp "dist/codeartsGUI-${ver}-amd64.deb" . 2>/dev/null || true
+          gh release create "${GITHUB_REF_NAME}" \
+            "codeartsGUI-${ver}-ubuntu-x86_64.tar.gz" \
+            "codeartsGUI-${ver}-amd64.deb" \
+            --title "codeartsGUI ${ver}" \
+            --generate-notes \
+            --repo "${{ github.repository }}"

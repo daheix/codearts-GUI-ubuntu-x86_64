@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=CodeArts 工作台
+GenericName=CodeArts GUI
+Comment=CodeArts CLI/TUI 的原生图形工作台（进程隔离防卡顿）
+Exec=codeartsGUI
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
