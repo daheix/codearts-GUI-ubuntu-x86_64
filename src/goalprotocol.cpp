@@ -199,4 +199,20 @@ QString GoalProtocol::resumePrompt(const QString &goal, int doneSteps,
   return p;
 }
 
+QString GoalProtocol::continuePrompt(int doneSteps, int totalSteps,
+                                     const QString &lastStepTitle) {
+  // 轻量续跑：不重发目标/完整契约（上下文仍在同一会话），仅让 AI 接着干。
+  QString p;
+  p += QStringLiteral("【/goal 继续】对话已中断，目标不变、进度保留（已完成 "
+                      "%1/%2 步")
+           .arg(doneSteps)
+           .arg(totalSteps);
+  if (!lastStepTitle.trimmed().isEmpty())
+    p += QStringLiteral("，最后完成：%1").arg(lastStepTitle);
+  p += QStringLiteral(
+      "）。\n请**继续完成剩余任务**，不要重新开始：直接从下一步按协议输出 "
+      "[GOAL-STEP n/N] <步骤> | 推荐方案: …，全部完成后输出 [GOAL-DONE]。\n");
+  return p;
+}
+
 } // namespace codearts

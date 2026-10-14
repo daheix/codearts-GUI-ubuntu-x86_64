@@ -312,7 +312,8 @@ TEST_CASE("GoalRunner interrupt(忙)信号在→不打断合法长步骤") {
   }
   r.tick(t + 100); // ~100s，仍应放行长步骤
   if (sink.injections.size() != after)
-    MESSAGE("UNEXPECTED restart, statuses=", statuses.join(" | ").toStdString());
+    MESSAGE("UNEXPECTED restart, statuses=",
+            statuses.join(" | ").toStdString());
   CHECK(sink.injections.size() == after);
   CHECK(r.phase() == GoalPhase::Driving);
 }
@@ -343,4 +344,27 @@ TEST_CASE("GoalRunner interrupt 消失+无进展 60s → 判定停住并重启�
   }
   r.tick(t + 100); // 距最后 interrupt>20s 且无进展>60s
   CHECK(sink.injections.size() > after); // 重启续跑
+}
+
+TEST_CASE("GoalRunner 停续 = 发送'继续完成剩余任务'，非重启全文契约") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标Z"), QString());
+  r.feed(QStringLiteral("[GOAL-STEP 1/2] 实现登录 | 推荐方案: A"));
+  const int after = sink.injections.size();
+  qint64 t = r.nowMs();
+  for (int i = 0; i < 65; i++) {
+    t += 1000;
+    r.setClock(t);
+    r.feed(QStringLiteral("\x1b[3;6H\x1b[?25h"));
+  }
+  r.tick(t + 100);
+  REQUIRE(sink.injections.size() > after);
+  const QString last = sink.injections.last();
+  CHECK(last.contains(QStringLiteral("继续完成剩余任务"))); // 是"继续"
+  CHECK_FALSE(last.contains(QStringLiteral("目标契约"))); // 不是重启全文契约
+  CHECK_FALSE(last.contains(QStringLiteral("目标Z"))); // 不重述目标
 }

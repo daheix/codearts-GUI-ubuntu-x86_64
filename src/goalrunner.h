@@ -82,9 +82,11 @@ private:
   void persist(); // 落盘断点
   void handleMarkers(const GoalMarkers &m);
   void scheduleRetry(const QString &kind); // 永久重试入口（永不放弃）
-  void forceRestart(const QString &reason); // 看门狗触发：非正常→强制重启续跑
+  void forceRestart(const QString &reason); // 会话重建后：完整断点续跑
+  void nudgeContinue(const QString &reason); // 会话活着仅中断：发"继续完成剩余任务"
   void injectContract();
   void injectResume();
+  void injectNudge(); // 轻量续跑注入（不重发全文）
 
   ITerminalSink *m_sink = nullptr;
   QString m_statePath;

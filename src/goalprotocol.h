@@ -44,6 +44,10 @@ public:
   // 断点恢复（会话重建后注入）：带已完成进度上下文。
   static QString resumePrompt(const QString &goal, int doneSteps,
                               int totalSteps, const QString &lastStepTitle);
+
+  // 轻度续跑指令：会话活着、上下文仍在，只是中断了。不重发全文，仅让 AI 接着干。
+  static QString continuePrompt(int doneSteps, int totalSteps,
+                                 const QString &lastStepTitle);
 };
 
 } // namespace codearts

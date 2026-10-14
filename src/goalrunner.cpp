@@ -66,6 +66,19 @@ void GoalRunner::injectResume() {
   setPhase(GoalPhase::AwaitingModel);
 }
 
+void GoalRunner::injectNudge() {
+  // 轻量续跑：会话活着、目标/进度已在上下文中，只发"继续"指令，不重发全文。
+  const QString prompt = GoalProtocol::continuePrompt(
+      m_state.doneSteps(), m_state.totalSteps, m_state.lastStepTitle);
+  m_state.status = QStringLiteral("driving");
+  persist();
+  emit injectionRequested(prompt);
+  if (m_sink)
+    m_sink->inject(prompt + QStringLiteral("\r"));
+  m_lastFeedMs = m_lastProgressMs = m_lastContentMs = nowMs();
+  setPhase(GoalPhase::AwaitingModel);
+}
+
 void GoalRunner::start(const QString &goal, const QString &acceptance) {
   m_state = GoalState{};
   m_state.goal = goal;
@@ -223,9 +236,9 @@ void GoalRunner::pumpRetry() {
   if (!m_retry.shouldRetry(nowMs()))
     return;
   m_errorRetryPending = false;
-  // 重发：有断点进度则用恢复注入，否则重发契约。
+  // 出错重试发生在活会话（上下文仍在）：有进度则"继续"完成剩余任务，否则重发契约。
   if (m_state.doneSteps() > 0 || m_state.totalSteps > 0) {
-    injectResume();
+    injectNudge();
   } else {
     injectContract();
   }
@@ -245,6 +258,21 @@ void GoalRunner::forceRestart(const QString &reason) {
     injectResume();
   else
     injectContract();
+}
+
+void GoalRunner::nudgeContinue(const QString &reason) {
+  // 会话活着、仅中断：发"继续完成剩余任务"（轻量续跑），不重发全文契约。
+  m_retry.notifyError(nowMs(), reason);
+  emit retrying(m_retry.consecutiveFailures(), reason);
+  emit statusText(
+      QStringLiteral("对话中断(%1)，继续完成剩余任务 #%2（永久续航）")
+          .arg(reason)
+          .arg(m_retry.consecutiveFailures()));
+  m_lastFeedMs = m_lastProgressMs = m_lastContentMs = nowMs();
+  if (m_state.doneSteps() > 0 || m_state.totalSteps > 0)
+    injectNudge(); // 有进度 → 轻量"继续"
+  else
+    injectContract(); // 尚未开始 → 下发契约
 }
 
 void GoalRunner::tick(qint64 nowMs) {
@@ -273,8 +301,9 @@ void GoalRunner::tick(qint64 nowMs) {
         (chatStopped || noContent >= kWatchdogContentMs)) {
       // 判据：无 [GOAL-STEP] 推进达阈值，且(对话已停 或 长时间无真实内容)。
       // interrupt 在(模型仍忙)时 chatStopped=false → 绝不打断合法长步骤。
-      forceRestart(chatStopped ? QStringLiteral("stall-chat-stopped")
-                               : QStringLiteral("stall-no-content"));
+      // 会话仍活着、模型停住 → 发送"继续完成剩余任务"（非重启全文）。
+      nudgeContinue(chatStopped ? QStringLiteral("stall-chat-stopped")
+                                : QStringLiteral("stall-no-content"));
     }
   } else if (m_phase == GoalPhase::Recovering) {
     const qint64 silent =
