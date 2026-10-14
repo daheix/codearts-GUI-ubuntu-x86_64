@@ -24,19 +24,20 @@ jobs:
             libdbus-1-3 \
             dpkg-dev binutils
 
-      - name: 安装 Qt 6.8（现代 Qt6，满足 qtermwidget 2.4.0；apt 版过旧不可用）
+      - name: 安装 Qt 6.7（现代 Qt6，满足 qtermwidget 2.4.0；apt 版过旧不可用）
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.8.0"
+          version: "6.7.3"
           host: linux
           target: desktop
           arch: gcc_64
           dir: ${{ github.workspace }}/qt
           cache: true
+          set-env: "true"
 
       - name: Configure（指定安装的 Qt6 前缀）
         run: |
-          QT_PREFIX="${{ github.workspace }}/qt/6.8.0/gcc_64"
+          QT_PREFIX="${{ github.workspace }}/qt/6.7.3/gcc_64"
           echo "Qt 前缀: $QT_PREFIX"
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCODEARTS_QT6_PREFIX="$QT_PREFIX"
