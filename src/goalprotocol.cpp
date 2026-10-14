@@ -115,9 +115,12 @@ QString GoalProtocol::classifyModelError(const QString &text) {
     const char *kind;
     const QRegularExpression re;
   } static const kPatterns[] = {
-      {"timeout", QRegularExpression(
-                      QStringLiteral("request\\s+timed?\\s?out|ETIMEDOUT|超时"),
-                      QRegularExpression::CaseInsensitiveOption)},
+      {"timeout",
+       QRegularExpression(
+           QStringLiteral(
+               "\\btimed?\\s+out\\b|\\binfo\\s+timeout\\b|"
+               "\\btimeout\\b(?!\\s*[=:])|ETIMEDOUT|超时|请求?已?超时"),
+           QRegularExpression::CaseInsensitiveOption)},
       {"rate_limit",
        QRegularExpression(
            QStringLiteral(

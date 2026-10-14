@@ -60,8 +60,13 @@ public:
   bool warningActive() const; // ≥10 连续失败 → 黄条
 
 public slots:
-  // 由 UI 定时器周期调用：到期则重发当前指令（永久重试的节拍入口）。
+  // 由 UI 定时器周期调用：
+  //  - pumpRetry：到期重试（重试引擎的节拍入口）。
+  //  - tick：看门狗 + 到期重试泵。tick 以 1 分钟窗口判"目标进行中但终端长时间
+  //    无输出/无进度"为停滞，强制注入续跑（不依赖错误文案匹配，FR-9
+  //    兜底续航）。
   void pumpRetry();
+  void tick(qint64 nowMs);
 
 signals:
   void phaseChanged(GoalPhase phase);
@@ -77,6 +82,7 @@ private:
   void persist(); // 落盘断点
   void handleMarkers(const GoalMarkers &m);
   void scheduleRetry(const QString &kind); // 永久重试入口（永不放弃）
+  void forceRestart(const QString &reason); // 看门狗触发：非正常→强制重启续跑
   void injectContract();
   void injectResume();
 
@@ -87,7 +93,10 @@ private:
   GoalPhase m_phase = GoalPhase::Idle;
   QString m_acceptance;
   qint64 m_nowMs = -1;      // <0 = 用真实时钟
-  qint64 m_lastFeedMs = -1; // 最近输出时间（停滞指纹用）
+  qint64 m_lastFeedMs = -1; // 最近一次终端输出时间（停滞判据）
+  qint64 m_lastProgressMs = -1; // 最近一次步进标记/注入时间（无进度判据）
+  qint64 m_recoverSinceMs =
+      -1; // 会话死亡进入 Recovering 的时刻（恢复兜底计时）
   bool m_awaitingDone = false;
 };
 

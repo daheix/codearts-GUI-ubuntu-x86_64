@@ -152,3 +152,86 @@ TEST_CASE("GoalRunner 断点文件损坏时 start 重置为新目标") {
   CHECK(r.phase() == GoalPhase::AwaitingModel);
   CHECK(r.state().goal == QStringLiteral("新目标"));
 }
+
+// ───── 看门狗 + 错误识别修复（用户反馈：info timeout 后停住不续跑）─────
+
+TEST_CASE("GoalRunner 看门狗：目标进行中 60s 无输出即强制续跑（非正常重启）") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标X"), QString());
+  const int after = sink.injections.size();
+
+  // 30s 无输出：未到 1 分钟窗口，不触发
+  r.tick(1000 + 30 * 1000);
+  CHECK(sink.injections.size() == after);
+
+  // 61s 持续无任何终端输出（正是 info timeout 后停住的情形）→ 强制续跑
+  r.tick(1000 + 61 * 1000);
+  CHECK(sink.injections.size() > after);
+  CHECK(r.phase() == GoalPhase::AwaitingModel); // 重注后回到等待模型
+  CHECK(r.retry().consecutiveFailures() >= 1);
+}
+
+TEST_CASE("GoalRunner 'info timeout' 真实文案被识别并立即重试") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标"), QString());
+  const int after = sink.injections.size();
+
+  r.feed(QStringLiteral("info timeout")); // TUI 实际显示的样式
+  CHECK(r.retry().lastErrorKind() == QStringLiteral("timeout"));
+  CHECK(r.retry().consecutiveFailures() == 1);
+  CHECK(sink.injections.size() > after); // 立即重注，不停住
+}
+
+TEST_CASE("GoalRunner Driving 阶段出错也重试（不再被阶段门控吞掉）") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标"), QString());
+  r.feed(QStringLiteral("[GOAL-STEP 1/2] 调研 | 推荐方案: A"));
+  CHECK(r.phase() == GoalPhase::Driving);
+
+  const int after = sink.injections.size();
+  r.feed(QStringLiteral("info timeout")); // Driving 下出错同样要续航
+  CHECK(r.retry().consecutiveFailures() >= 1);
+  CHECK(sink.injections.size() > after);
+}
+
+TEST_CASE("GoalRunner 含 timeout 字样的进度标记不误判为错误") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标"), QString());
+  r.retry().consecutiveFailures(); // noop
+  r.feed(QStringLiteral("[GOAL-STEP 1/2] 配置请求 timeout 参数 | 推荐方案: x"));
+  CHECK(r.retry().consecutiveFailures() == 0); // 进度优先，不误判
+  CHECK(r.phase() == GoalPhase::Driving);
+}
+
+TEST_CASE("GoalRunner 会话中断→restart 后看门狗兜底续跑") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标"), QString());
+  r.feed(QStringLiteral("[GOAL-STEP 1/2] 实现 | 推荐方案: A"));
+
+  r.onSessionDied(); // UI 已 restart 会话，进入 Recovering
+  CHECK(r.phase() == GoalPhase::Recovering);
+  const int after = sink.injections.size();
+
+  r.tick(1000 + 91 * 1000); // 重建后 90s 兜底，强制断点续跑
+  CHECK(sink.injections.size() > after);
+}

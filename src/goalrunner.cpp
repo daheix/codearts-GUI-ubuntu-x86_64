@@ -42,6 +42,8 @@ void GoalRunner::injectContract() {
   emit injectionRequested(prompt);
   if (m_sink)
     m_sink->inject(prompt + QStringLiteral("\r"));
+  m_lastFeedMs = m_lastProgressMs =
+      nowMs(); // 注入完毕开始计时，等待模型/新输出
   setPhase(GoalPhase::AwaitingModel);
 }
 
@@ -54,6 +56,8 @@ void GoalRunner::injectResume() {
   emit injectionRequested(prompt);
   if (m_sink)
     m_sink->inject(prompt + QStringLiteral("\r"));
+  m_lastFeedMs = m_lastProgressMs =
+      nowMs(); // 注入完毕开始计时，等待模型/新输出
   setPhase(GoalPhase::AwaitingModel);
 }
 
@@ -64,6 +68,8 @@ void GoalRunner::start(const QString &goal, const QString &acceptance) {
   m_state.status = QStringLiteral("driving");
   m_retry = RetryEngine{};
   m_awaitingDone = false;
+  m_recoverSinceMs = -1;
+  m_lastFeedMs = m_lastProgressMs = nowMs();
   // 先落盘（含目标与验收），再下发契约——崩溃亦可恢复。
   persist();
   emit statusText(QStringLiteral("下发目标契约…"));
@@ -79,25 +85,35 @@ void GoalRunner::stop() {
 
 void GoalRunner::feed(const QString &raw) {
   m_lastFeedMs = nowMs();
-
-  // 先做错误分类（通道1）。错误输出不是"存活"信号，不得清零计数。
-  const QString kind = GoalProtocol::classifyModelError(raw);
   const GoalMarkers m = GoalProtocol::parse(raw);
 
-  if (!kind.isEmpty() && m_phase == GoalPhase::AwaitingModel) {
-    // 真实模型错误 → 永久重试。
+  // 进度优先：同段既有步进/完成标记，就不按错误处理（避免把含"timeout"字样的
+  // 步骤描述误判为模型错误）。
+  if (m.hasStep || m.hasDone) {
+    if (m_retry.consecutiveFailures() > 0)
+      m_retry.notifySuccess();
+    handleMarkers(m);
+    return;
+  }
+
+  // 错误检测（通道1）：放宽到所有"活动阶段"，Driving/Reccovering 出错同样续航。
+  const bool activePhase = m_phase == GoalPhase::AwaitingModel ||
+                           m_phase == GoalPhase::Driving ||
+                           m_phase == GoalPhase::Recovering;
+  const QString kind = GoalProtocol::classifyModelError(raw);
+  if (!kind.isEmpty() && activePhase) {
     scheduleRetry(kind);
     return;
   }
 
-  // 非错误的真实输出 → 模型/会话存活，重置连续失败计数（保留审计）。
+  // 普通输出：会话存活，重置连续失败计数（保留审计）。
   if (m_retry.consecutiveFailures() > 0)
     m_retry.notifySuccess();
-
-  handleMarkers(m);
 }
 
 void GoalRunner::handleMarkers(const GoalMarkers &m) {
+  if (m.hasStep || m.hasDone)
+    m_lastProgressMs = nowMs(); // 有真实步进/完成 → 刷新无进度计时
   if (m.hasPlan || m.hasStep) {
     setPhase(GoalPhase::Driving);
   }
@@ -134,6 +150,15 @@ void GoalRunner::handleMarkers(const GoalMarkers &m) {
   }
 }
 
+// ── 看门狗写死参数（用户指定：1 分钟轮询一次对话状态）──
+static constexpr qint64 kWatchdogSilenceMs =
+    60 * 1000; // 目标进行中持续 60s 无任何终端输出→判停滞
+static constexpr qint64 kWatchdogNoProgressMs =
+    180 * 1000; // AwaitingModel 下 180s 无步进→判卡
+static constexpr qint64 kRecoverResumeMs =
+    90 * 1000; // 会话重建后 90s 内强制续跑（兜底）
+static constexpr qint64 kNoBaseline = 1LL << 62; // 无基线时的哨兵
+
 void GoalRunner::scheduleRetry(const QString &kind) {
   // 永久重试：立即或到期重发当前指令。次数无上限。
   const bool immediate = m_retry.notifyError(nowMs(), kind);
@@ -159,14 +184,68 @@ void GoalRunner::pumpRetry() {
   }
 }
 
+void GoalRunner::forceRestart(const QString &reason) {
+  // 看门狗判定"非正常"后的一次强制续跑。计入连续失败/审计（黄条依据），
+  // 但直接注入、不受重试间隔节流——每次触发都必须真的发出消息，绝不空转。
+  m_retry.notifyError(nowMs(), reason);
+  emit retrying(m_retry.consecutiveFailures(), reason);
+  emit statusText(
+      QStringLiteral("对话停滞/异常(%1)，强制重启续跑 #%2（永久续航）")
+          .arg(reason)
+          .arg(m_retry.consecutiveFailures()));
+  m_lastFeedMs = m_lastProgressMs = nowMs();
+  if (m_state.doneSteps() > 0 || m_state.totalSteps > 0)
+    injectResume();
+  else
+    injectContract();
+}
+
+void GoalRunner::tick(qint64 nowMs) {
+  setClock(nowMs);
+  const qint64 now = nowMs;
+
+  if (m_phase == GoalPhase::Driving || m_phase == GoalPhase::AwaitingModel ||
+      m_phase == GoalPhase::Recovering) {
+    // 已有错误/重试在进行：交给重试引擎按 60s 节流重发，看门狗不重复触发。
+    if (m_retry.consecutiveFailures() > 0) {
+      pumpRetry();
+      return;
+    }
+  }
+
+  if (m_phase == GoalPhase::Driving || m_phase == GoalPhase::AwaitingModel) {
+    const qint64 silent =
+        (m_lastFeedMs < 0) ? kNoBaseline : (now - m_lastFeedMs);
+    const qint64 noProg =
+        (m_lastProgressMs < 0) ? kNoBaseline : (now - m_lastProgressMs);
+    if (silent >= kWatchdogSilenceMs) {
+      forceRestart(QStringLiteral("stall-no-output"));
+    } else if (m_phase == GoalPhase::AwaitingModel &&
+               noProg >= kWatchdogNoProgressMs) {
+      forceRestart(QStringLiteral("stall-no-progress"));
+    }
+  } else if (m_phase == GoalPhase::Recovering) {
+    const qint64 silent =
+        (m_lastFeedMs < 0) ? kNoBaseline : (now - m_lastFeedMs);
+    const qint64 sinceDeath =
+        (m_recoverSinceMs < 0) ? kNoBaseline : (now - m_recoverSinceMs);
+    if (silent >= kWatchdogSilenceMs || sinceDeath >= kRecoverResumeMs) {
+      forceRestart(QStringLiteral("session-recovered"));
+    }
+  }
+}
+
 void GoalRunner::onSessionDied() {
   if (m_phase == GoalPhase::Done || m_phase == GoalPhase::Idle)
     return;
   setPhase(GoalPhase::Recovering);
+  m_recoverSinceMs = nowMs();
+  m_lastFeedMs = -1; // 会话重启后以新输出重算静默
+  m_lastProgressMs = nowMs();
   emit statusText(QStringLiteral("会话中断，重启并断点续跑（永久续航）…"));
-  // 由 UI 层重建会话后调用 onSessionDied 完成后的续跑；此处仅记录与上报。
-  // UI 重建完成后应调用 injectResume（经由再次 onSessionDied 的恢复分支）。
   persist();
+  // 续跑注入由 tick 看门狗完成：UI 重建会话后，新 TUI 就绪即静默→60s 兜底，
+  // 或超过 kRecoverResumeMs(90s) 强制续跑，保证不因重建时序而卡死。
 }
 
 void GoalRunner::onVerifyFinished(bool passed, QString detail) {
@@ -191,6 +270,7 @@ void GoalRunner::onVerifyFinished(bool passed, QString detail) {
     emit injectionRequested(refeed);
     if (m_sink)
       m_sink->inject(refeed + QStringLiteral("\r"));
+    m_lastFeedMs = m_lastProgressMs = nowMs();
     setPhase(GoalPhase::AwaitingModel);
     emit statusText(QStringLiteral("验收未通过，继续驱动"));
   }

@@ -4,6 +4,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDateTime>
 #include <QDir>
 #include <QLabel>
 #include <QMenuBar>
@@ -372,16 +373,23 @@ void MainWindow::wireGoal(SessionWidget *s) {
             QMessageBox::information(this, QStringLiteral("/goal 完成"),
                                      summary);
           });
-  // 到期重试泵：每秒驱动一次 pumpRetry（永久重试的节拍，FR-9）。
+  // 驱动节拍（FR-9 + 看门狗）：每 1s 调一次 tick；tick 内部以 60s 窗口判停滞、
+  // 到期重试泵、恢复兜底——目标进行中一旦对话非正常（无输出/无进度）即强制续跑。
   auto *timer = new QTimer(m_goal);
   timer->setInterval(1000);
-  connect(timer, &QTimer::timeout, m_goal, &GoalRunner::pumpRetry);
+  connect(timer, &QTimer::timeout, this, [this]() {
+    if (m_goal)
+      m_goal->tick(QDateTime::currentMSecsSinceEpoch());
+  });
   timer->start();
   // 会话退出 → 驱动器进入 Recovering（永久续航）
-  connect(s, &SessionWidget::processExited, m_goal, [this](SessionWidget *) {
-    if (m_goal)
-      m_goal->onSessionDied();
+  connect(s, &SessionWidget::processExited, this, [this, s](SessionWidget *) {
     m_retryLabel->setVisible(false);
+    if (m_goal && m_goal->phase() != GoalPhase::Idle &&
+        m_goal->phase() != GoalPhase::Done) {
+      s->restart(); // 重建终端，保证有活的注入目标（L4 自愈）
+      m_goal->onSessionDied(); // 进入 Recovering，tick 看门狗负责续跑
+    }
   });
 }
 
