@@ -93,6 +93,12 @@ void MainWindow::buildUi() {
   auto *newAct = m_toolbar->addAction(QStringLiteral("新建会话"), this,
                                       &MainWindow::onNewSession);
   newAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+T")));
+  // /goal 目标入口（T16）：醒目放工具栏首位，避免只藏在菜单里难以发现
+  auto *goalAct = m_toolbar->addAction(QStringLiteral("🎯 /goal 目标"), this,
+                                       &MainWindow::onStartGoal);
+  goalAct->setToolTip(QStringLiteral(
+      "定义一个目标，让 AI 自主规划步进并驱动到 100% 验收（Ctrl+G）"));
+  goalAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
   auto *restartAct = m_toolbar->addAction(QStringLiteral("重启会话"), this,
                                           &MainWindow::onRestartCurrentSession);
   restartAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+R")));
@@ -327,14 +333,25 @@ void MainWindow::wireGoal(SessionWidget *s) {
   // 终端输出 → 驱动器
   connect(s, &SessionWidget::outputReceived, m_goal, &GoalRunner::feed);
 
+  // 在会话标签上打目标徽标：让"哪个标签在跑目标 + 进度"一眼可见（界面可见性）
+  auto badgeTab = [this, s](const QString &txt) {
+    const int idx = m_tabs->indexOf(s);
+    if (idx >= 0)
+      m_tabs->setTabText(idx, txt);
+  };
+
   // 阶段 → 状态栏
   connect(m_goal, &GoalRunner::statusText, this,
           [this](const QString &t) { m_goalLabel->setText(t); });
   connect(
       m_goal, &GoalRunner::progress, this,
-      [this](int done, int total, const QString &title) {
+      [this, badgeTab](int done, int total, const QString &title) {
         m_goalLabel->setText(
             QStringLiteral("/goal %1/%2 · %3").arg(done).arg(total).arg(title));
+        badgeTab(QStringLiteral("\u{1F3AF} %1/%2 · %3")
+                     .arg(done)
+                     .arg(total)
+                     .arg(title.left(16)));
       });
   // 重试黄条（FR-9：≥10 警示，不打断）
   connect(m_goal, &GoalRunner::retrying, this,
@@ -347,11 +364,14 @@ void MainWindow::wireGoal(SessionWidget *s) {
               m_retryLabel->setVisible(true);
             }
           });
-  connect(m_goal, &GoalRunner::completed, this, [this](const QString &summary) {
-    m_retryLabel->setVisible(false);
-    m_goalLabel->setText(QStringLiteral("/goal 完成"));
-    QMessageBox::information(this, QStringLiteral("/goal 完成"), summary);
-  });
+  connect(m_goal, &GoalRunner::completed, this,
+          [this, s, badgeTab](const QString &summary) {
+            m_retryLabel->setVisible(false);
+            m_goalLabel->setText(QStringLiteral("/goal 完成"));
+            badgeTab(QStringLiteral("\u2705 ") + s->title());
+            QMessageBox::information(this, QStringLiteral("/goal 完成"),
+                                     summary);
+          });
   // 到期重试泵：每秒驱动一次 pumpRetry（永久重试的节拍，FR-9）。
   auto *timer = new QTimer(m_goal);
   timer->setInterval(1000);
