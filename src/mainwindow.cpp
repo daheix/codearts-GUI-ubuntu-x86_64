@@ -4,6 +4,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QLabel>
@@ -47,7 +48,8 @@ private:
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
-  setWindowTitle(QStringLiteral("CodeArts 工作台"));
+  setWindowTitle(QStringLiteral("CodeArts 工作台 v%1")
+                     .arg(QCoreApplication::applicationVersion()));
   resize(1100, 720);
 
   m_mgr = new SessionManager(this);
@@ -173,9 +175,12 @@ void MainWindow::buildMenus() {
   helpMenu->addAction(QStringLiteral("关于(&A)"), this, [this]() {
     QMessageBox::about(
         this, QStringLiteral("关于 CodeArts 工作台"),
-        QStringLiteral(
-            "CodeArts 工作台\n基于原生终端仿真的 CodeArts CLI/TUI 图形包装。\n"
-            "进程隔离 + 回滚上限 + 健康监控，解决长会话卡顿。"));
+        QStringLiteral("CodeArts 工作台 v%1\n"
+                       "基于原生终端仿真的 CodeArts CLI/TUI 图形包装。\n"
+                       "进程隔离 + 回滚上限 + 健康监控，解决长会话卡顿；\n"
+                       "/goal 自愈驱动 + 双主题 + 权限管理 + 中文输入。\n"
+                       "MIT License · ubuntu x86_64")
+            .arg(QCoreApplication::applicationVersion()));
   });
 }
 

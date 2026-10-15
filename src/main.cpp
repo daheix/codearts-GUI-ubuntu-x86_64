@@ -19,7 +19,7 @@ int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
   QApplication::setApplicationName(QStringLiteral("CodeArts 工作台"));
   QApplication::setOrganizationName(QStringLiteral("codeartsGUI"));
-  QApplication::setApplicationVersion(QStringLiteral("0.2.2"));
+  QApplication::setApplicationVersion(QStringLiteral("0.2.3"));
 
   codearts::MainWindow w;
   w.show();
