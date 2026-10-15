@@ -44,6 +44,7 @@ void GoalRunner::injectContract() {
       GoalProtocol::contractPrompt(m_state.goal, m_acceptance);
   m_state.status = QStringLiteral("driving");
   persist();
+  noteInjection(prompt);
   emit injectionRequested(prompt);
   if (m_sink)
     m_sink->inject(prompt + QStringLiteral("\r"));
@@ -58,6 +59,7 @@ void GoalRunner::injectResume() {
                                  m_state.totalSteps, m_state.lastStepTitle);
   m_state.status = QStringLiteral("driving");
   persist();
+  noteInjection(prompt);
   emit injectionRequested(prompt);
   if (m_sink)
     m_sink->inject(prompt + QStringLiteral("\r"));
@@ -72,6 +74,7 @@ void GoalRunner::injectNudge() {
       m_state.doneSteps(), m_state.totalSteps, m_state.lastStepTitle);
   m_state.status = QStringLiteral("driving");
   persist();
+  noteInjection(prompt);
   emit injectionRequested(prompt);
   if (m_sink)
     m_sink->inject(prompt + QStringLiteral("\r"));
@@ -103,17 +106,52 @@ void GoalRunner::stop() {
   emit statusText(QStringLiteral("/goal 已停止"));
 }
 
+void GoalRunner::noteInjection(const QString &text) {
+  // 注入后开启回显守卫窗口：其间不解析进度/完成标记（见 kEchoGuardMs）。
+  m_deafUntilMs = nowMs() + kEchoGuardMs;
+  m_recentInjections.append(text);
+  while (m_recentInjections.size() > 6)
+    m_recentInjections.removeFirst();
+}
+
+QString GoalRunner::stripInjectionEcho(const QString &raw) const {
+  // 把我们注入过的文本从原始输出里整段剔除，避免其回显被当作 AI 输出解析。
+  QString out = raw;
+  for (const QString &inj : m_recentInjections) {
+    if (inj.isEmpty())
+      continue;
+    // 注入可能多行且终端会重排，故逐行剔除其出现的片段（按行消除，抗换行差异）。
+    const QStringList lines = inj.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &ln : lines) {
+      const QString key = ln.trimmed();
+      if (key.size() >= 6)
+        out.remove(key);
+    }
+  }
+  return out;
+}
+
 void GoalRunner::feed(const QString &raw) {
   m_lastFeedMs = nowMs();
-  if (hasRealContent(raw))
-    m_lastContentMs = nowMs(); // 抗心跳：真实文字才算"活"，转轮/心跳不算
-  if (reportsBusy(raw))
+  // 1) 剔除自身注入的回显 +
+  // 抗心跳判活（忙碌/内容信号始终更新，真实场景回显瞬时、
+  //    AI 响应有延迟，二者不会误伤）。
+  const QString in = stripInjectionEcho(raw);
+  if (hasRealContent(in))
+    m_lastContentMs = nowMs();
+  if (reportsBusy(in))
     m_lastBusySignalMs =
         nowMs(); // 状态栏"esc interrupt"在=模型正在工作（对话状态真值）
-  const GoalMarkers m = GoalProtocol::parse(raw);
 
-  // 进度优先：同段既有步进/完成标记，就不按错误处理（避免把含"timeout"字样的
-  // 步骤描述误判为模型错误）。
+  // 2) 回显守卫：注入后 kEchoGuardMs 内不解析进度/完成标记——终端回显含协议说明
+  //    (如"输出 [GOAL-DONE]")，否则会被当成 AI 申报完成(e2e 实测一启动即误判)。
+  const bool deaf = nowMs() < m_deafUntilMs;
+  GoalMarkers m = GoalProtocol::parse(in);
+  if (deaf)
+    m.hasDone = false; // 守卫期作废"完成"标记：注入回显里的 [GOAL-DONE]
+                       // 是协议说明，非 AI 申报
+
+  // 进度优先：同段有步进/完成标记就不按错误处理（防含"timeout"的方案描述误判）。
   if (m.hasStep || m.hasDone) {
     if (m_retry.consecutiveFailures() > 0)
       m_retry.notifySuccess();
@@ -122,11 +160,11 @@ void GoalRunner::feed(const QString &raw) {
     return;
   }
 
-  // 错误检测（通道1）：活动阶段（含 Driving）出错同样续航。
+  // 错误检测（通道1，即时、不受守卫）：活动阶段（含 Driving）出错同样续航。
   const bool activePhase = m_phase == GoalPhase::AwaitingModel ||
                            m_phase == GoalPhase::Driving ||
                            m_phase == GoalPhase::Recovering;
-  const QString kind = GoalProtocol::classifyModelError(raw);
+  const QString kind = GoalProtocol::classifyModelError(in);
   if (!kind.isEmpty() && activePhase) {
     scheduleRetry(kind);
     return;
@@ -351,6 +389,7 @@ void GoalRunner::onVerifyFinished(bool passed, QString detail) {
         QStringLiteral("验收未通过：%1\n请分析失败原因，修正后继续执行，"
                        "完成后再次输出 [GOAL-DONE]。")
             .arg(detail);
+    noteInjection(refeed);
     emit injectionRequested(refeed);
     if (m_sink)
       m_sink->inject(refeed + QStringLiteral("\r"));

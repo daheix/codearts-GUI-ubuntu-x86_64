@@ -1,6 +1,9 @@
 // sessionwidget.cpp —— 单会话视图实现
 #include "sessionwidget.h"
 
+#include <QKeySequence>
+#include <QMenu>
+#include <QShortcut>
 #include <QVBoxLayout>
 
 #include <csignal>
@@ -35,6 +38,30 @@ QTermWidget *SessionWidget::createTerm() {
   // 交由 GoalRunner 用 GoalProtocol::normalizeReceived 规范化后再解析。
   connect(term, &QTermWidget::receivedData, this,
           [this](const QString &data) { emit outputReceived(data); });
+  // 复制/粘贴：TUI 开启鼠标跟踪，普通拖拽选不中；Shift+拖拽本地选区，
+  // 再 Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴，或右键菜单。菜单复制不依赖选区模式。
+  term->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(term, &QWidget::customContextMenuRequested, term,
+          [term](const QPoint &p) {
+            QMenu menu;
+            QAction *cp = menu.addAction(
+                QStringLiteral("复制  (Ctrl+Shift+C)"));
+            QAction *ps = menu.addAction(
+                QStringLiteral("粘贴  (Ctrl+Shift+V)"));
+            cp->setEnabled(!term->selectedText(false).isEmpty());
+            connect(cp, &QAction::triggered, term,
+                    [term] { term->copyClipboard(); });
+            connect(ps, &QAction::triggered, term,
+                    [term] { term->pasteClipboard(); });
+            menu.exec(term->mapToGlobal(p));
+          });
+  auto *cpSc = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")), term);
+  connect(cpSc, &QShortcut::activated, term,
+          [term] { term->copyClipboard(); });
+  auto *psSc =
+      new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+V")), term);
+  connect(psSc, &QShortcut::activated, term,
+          [term] { term->pasteClipboard(); });
   m_layout->addWidget(term);
   return term;
 }
@@ -78,6 +105,16 @@ void SessionWidget::sendText(const QString &text) {
   if (m_term) {
     m_term->sendText(text);
   }
+}
+
+void SessionWidget::copySelection() {
+  if (m_term)
+    m_term->copyClipboard();
+}
+
+void SessionWidget::pasteClipboard() {
+  if (m_term)
+    m_term->pasteClipboard();
 }
 
 void SessionWidget::teardown() {

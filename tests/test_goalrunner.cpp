@@ -64,6 +64,8 @@ TEST_CASE("GoalRunner 收到 GOAL-DONE 进入验收核验") {
   r.start(QStringLiteral("目标"), QStringLiteral("make test"));
 
   QSignalSpy verify(&r, &GoalRunner::verifyRequested);
+  // 推进越过回显守卫（真实场景回显瞬时、AI 报完成在其后），再喂真实 [GOAL-DONE]
+  r.setClock(1000 + GoalRunner::kEchoGuardMs + 1000);
   r.feed(QStringLiteral("[GOAL-DONE] 全部完成"));
   CHECK(r.phase() == GoalPhase::Verifying);
   REQUIRE(verify.size() == 1);
@@ -367,4 +369,84 @@ TEST_CASE("GoalRunner 停续 = 发送'继续完成剩余任务'，非重启全�
   CHECK(last.contains(QStringLiteral("继续完成剩余任务"))); // 是"继续"
   CHECK_FALSE(last.contains(QStringLiteral("目标契约"))); // 不是重启全文契约
   CHECK_FALSE(last.contains(QStringLiteral("目标Z"))); // 不重述目标
+}
+
+TEST_CASE("GoalRunner 自愈闭环：ESC中断→自动发继续→恢复→往复直到完成") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  qint64 t = 100000;
+  r.setClock(t);
+  r.start(QStringLiteral("完成任务"), QStringLiteral("true")); // 下发契约
+
+  auto busy = [&](int secs) { // 模型忙：状态栏 esc interrupt 在
+    for (int i = 0; i < secs; i++) {
+      t += 1000;
+      r.setClock(t);
+      r.feed(QStringLiteral("busy esc interrupt running now"));
+    }
+  };
+  auto idle =
+      [&](int secs) { // 被中断/停住：无 interrupt、无文字（用户按下 ESC ESC）
+        for (int i = 0; i < secs; i++) {
+          t += 1000;
+          r.setClock(t);
+          r.feed(QStringLiteral("\x1b[3;6H\x1b[?25h"));
+        }
+      };
+  auto step = [&](const QString &s) {
+    t += 1000;
+    r.setClock(t);
+    r.feed(s);
+  };
+
+  // 第1轮：忙 30s（interrupt 在），无步进 —— 不误重启
+  busy(30);
+  int before = sink.injections.size();
+  r.tick(t + 500);
+  CHECK(sink.injections.size() == before); // interrupt 在=在干活，不打断
+
+  // 用户连续 ESC 中断 → 停住 65s（无 interrupt 无进展）
+  idle(65);
+  r.tick(t + 500);
+  REQUIRE(sink.injections.size() == before + 1); // 自动续跑
+  // 尚无任何步进 → 重发契约重新启动目标（没有"剩余任务"可继续）
+  CHECK(sink.injections.last().contains(QStringLiteral("目标契约")));
+
+  // 收到继续 → 模型恢复，产出步进 1/2
+  step(QStringLiteral("[GOAL-STEP 1/2] 步骤一 | 推荐方案: A"));
+  CHECK(r.phase() == GoalPhase::Driving);
+
+  // 第2轮：再次 ESC 中断 → 又被自动救回
+  busy(5);
+  idle(65);
+  before = sink.injections.size();
+  r.tick(t + 500);
+  CHECK(sink.injections.size() == before + 1); // 再次自动"继续"
+  CHECK(sink.injections.last().contains(QStringLiteral("继续完成剩余任务")));
+
+  // 最终完成：步进 2/2 + [GOAL-DONE]，判据双过（先越过上一次注入的回显守卫）
+  step(QStringLiteral("[GOAL-STEP 2/2] 步骤二 | 推荐方案: B"));
+  t += GoalRunner::kEchoGuardMs + 1000;
+  r.setClock(t);
+  r.feed(QStringLiteral("[GOAL-DONE] 全部完成"));
+  CHECK(r.phase() == GoalPhase::Verifying);
+  r.onVerifyFinished(true, QStringLiteral("验收通过"));
+  CHECK(r.phase() == GoalPhase::Done);
+}
+
+TEST_CASE("GoalRunner 不把自身注入文本的回显当 AI 完成（e2e 暴露）") {
+  QTemporaryDir dir;
+  REQUIRE(dir.isValid());
+  MockSink sink;
+  GoalRunner r(&sink, dir.filePath(QStringLiteral(".goal_state.json")));
+  r.setClock(1000);
+  r.start(QStringLiteral("目标Z"), QStringLiteral("true"));
+  REQUIRE(sink.injections.size() == 1);
+  // 终端回显我们注入的契约（其中含协议说明"[GOAL-DONE]"）——不得被当成 AI
+  // 申报完成
+  r.feed(sink.injections.first());
+  CHECK(r.phase() == GoalPhase::AwaitingModel); // 未误入 Verifying
+  CHECK(r.phase() != GoalPhase::Verifying);
 }

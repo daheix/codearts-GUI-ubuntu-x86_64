@@ -26,6 +26,11 @@ public:
   // ── /goal 驱动通路（T15 接线）──
   void sendText(const QString &text); // 注入输入到 TUI（含 \r 提交）
 
+  // 复制/粘贴（TUI 开了鼠标跟踪，普通拖拽选不中；用右键菜单或快捷键）
+  void copySelection();
+  void pasteClipboard();
+
+
   qint64 pid() const; // TUI 子进程 PID（FR-5）
   bool isRunning() const;
   qint64 uptimeMs() const; // 运行时长（FR-5）

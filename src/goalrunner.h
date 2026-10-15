@@ -33,6 +33,9 @@ enum class GoalPhase {
 class GoalRunner : public QObject {
   Q_OBJECT
 public:
+  // 注入后回显守卫窗口（ms）：注入文本会经终端回显，其中含协议说明(如 [GOAL-DONE])，
+  // 此窗口内不解析步进/完成标记，防把自身注入回显当成 AI 输出（e2e 实测暴露）。
+  static constexpr qint64 kEchoGuardMs = 3000;
   // sink 注入器；statePath 断点文件路径。二者由调用方提供，Runner 不自造。
   GoalRunner(ITerminalSink *sink, QString statePath, QObject *parent = nullptr);
 
@@ -87,6 +90,8 @@ private:
   void injectContract();
   void injectResume();
   void injectNudge(); // 轻量续跑注入（不重发全文）
+  void noteInjection(const QString &text); // 记录注入文本
+  QString stripInjectionEcho(const QString &raw) const; // 剔除自身注入的回显
 
   ITerminalSink *m_sink = nullptr;
   QString m_statePath;
@@ -105,6 +110,8 @@ private:
       false; // 错误分类路径有待到期重试（tick 依此驱动 60s 泵）
   qint64 m_lastBusySignalMs =
       -1; // 状态栏"esc interrupt"(工作)信号：对话状态真值
+  QStringList m_recentInjections; // 最近注入文本（用于剔除其回显，防自解析）
+  qint64 m_deafUntilMs = -1;         // 回显守卫截止时刻：其前不解析进度/完成标记
   bool m_awaitingDone = false;
 };
 

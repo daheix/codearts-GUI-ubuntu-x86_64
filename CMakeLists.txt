@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(codeartsGUI VERSION 0.2.4 LANGUAGES CXX)
+project(codeartsGUI VERSION 0.2.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -191,6 +191,19 @@ install(FILES LICENSE README.md DESTINATION share/doc/codeartsGUI)
 # /usr/local 绝对路径导致 staging 失败；而遮蔽其 install 又会使父 cmake_install.cmake
 # 的 include 悬空。故改用 packaging/package.sh 基于自含静态二进制手动产出
 # tar.gz + .deb（完全可控）。上面的 install() 仅保留供人工 cmake --install 参考。
+
+# ── 真·端到端自愈验证 harness（一次性排障，交付无关；Xvfb 下运行）──
+add_executable(e2e_harness
+    tools/e2e_harness.cpp
+    src/goalrunner.cpp
+    src/goalprotocol.cpp
+    src/goalstate.cpp
+    src/retryengine.cpp)
+target_include_directories(e2e_harness PRIVATE src ${qtermwidget_SOURCE_DIR}/lib)
+target_link_libraries(e2e_harness PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets
+    qtermwidget6
+    ${CODEARTS_QT_CLOSURE})
 
 # ── 单元测试（doctest, 仅 Core：Environment + ProcessMonitor）──
 enable_testing()
