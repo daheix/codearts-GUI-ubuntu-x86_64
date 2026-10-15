@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(codeartsGUI VERSION 0.2.3 LANGUAGES CXX)
+project(codeartsGUI VERSION 0.2.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -173,6 +173,12 @@ target_link_libraries(codeartsGUI PRIVATE
 # ibus 静态插件：导入宏需该编译定义（仅在静态链接时）
 if(DEFINED CODEARTS_IBUS_DEF)
     target_compile_definitions(codeartsGUI PRIVATE ${CODEARTS_IBUS_DEF})
+endif()
+
+# 自包含发布（T-OSS）：把 libstdc++/libgcc 静态收编进二进制，减少运行期外部依赖。
+# X11/GL/xcb 等仍为系统平台库——由 packaging/package.sh 一并打进包内 + rpath $ORIGIN/lib。
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(codeartsGUI PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 
 install(TARGETS codeartsGUI RUNTIME DESTINATION bin)

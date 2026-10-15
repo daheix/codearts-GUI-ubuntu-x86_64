@@ -2,6 +2,13 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.4] - 2026-10-15
+
+### 变更（重要）
+- **真正的自包含安装包**：此前只静态链接了 Qt6，二进制仍动态依赖 X11/GL/xcb/xkb/libstdc++ 并经 RUNPATH 指向 vcpkg 的 libdbus，换机无法启动。现由 `packaging/package.sh` 将 ldd 全闭包（除 libc/libm/ld 基础库外的全部 .so，含 libstdc++/libdbus/xcb/xkb）拷入安装包 `lib/`，`patchelf` 把 rpath 设为 `$ORIGIN/lib`，二进制与 lib 同目录分发。
+- 安装后**除 glibc 外不依赖任何自身目录以外的库**（tar.gz 解压即用；.deb 装到 /usr/lib/codeartsGUI）。构建加 `-static-libstdc++ -static-libgcc`。
+- 自包含校验通过：包内二进制 ldd 除 libc/libm 外均解析到包内 lib/，34 个收编库零缺失、零 vcpkg 引用。
+
 ## [0.2.3] - 2026-10-15
 
 ### 新增
